@@ -1,10 +1,13 @@
 from __future__ import print_function
 from keras.preprocessing.image import ImageDataGenerator
+from keras.utils import Sequence
 import numpy as np 
 import os
 import glob
 import skimage.io as io
 import skimage.transform as trans
+import imageio
+from sklearn.preprocessing import minmax_scale
 
 Sky = [128,128,128]
 Building = [128,0,0]
@@ -47,7 +50,7 @@ def adjustData(img,mask,flag_multi_class,num_class):
 
 def trainGenerator(batch_size,train_path,image_folder,mask_folder,aug_dict,image_color_mode = "grayscale",
                     mask_color_mode = "grayscale",image_save_prefix  = "image",mask_save_prefix  = "mask",
-                    flag_multi_class = False,num_class = 2,save_to_dir = None,target_size = (256,256),seed = 1):
+                    flag_multi_class = False,num_class = 2,save_to_dir = None,target_size = (512,512),seed = 1):
     '''
     can generate image and mask at the same time
     use the same seed for image_datagen and mask_datagen to ensure the transformation for image and mask is the same
@@ -81,7 +84,84 @@ def trainGenerator(batch_size,train_path,image_folder,mask_folder,aug_dict,image
         yield (img,mask)
 
 
+def load_npz(path):
+    with np.load(path) as data:
+        if len(data) != 1 or "arr_0" not in data:
+            raise Exception("More than 1 array in the npz or name invalid")
+        arr = data['arr_0'].astype(np.float32)
 
+    if arr.shape[0] != arr.shape[1]:
+        print("ERROR", path)
+    
+    data = np.clip(arr, 0, 99999)
+    # data = minmax_scale(np.clip(arr, 0, 99999), feature_range=(0, 1))
+    return data
+
+
+def load_mask(path):
+    im = imageio.imread(path)
+    im = im
+    im[im > 0.5] = 1
+    im[im <= 0.5] = 0
+    return im
+
+
+class NpyGenerator(Sequence):
+
+    def __init__(self, image_path, mask_path, batch_size=32, shuffle=True, dim=(512, 512)):
+        """Constructor can be expanded,
+           with batch size, dimentation etc.
+        """
+        self.image_path = image_path
+        self.mask_path = mask_path
+        self.file_list = os.listdir(image_path)
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.dim = dim
+        self.on_epoch_end()
+
+    def __len__(self):
+        'Denotes the number of batches per epoch'
+        return int(np.floor(len(self.file_list) / self.batch_size))
+
+    def __getitem__(self, index):
+        'Generate one batch of data'
+        # Generate indexes of the batch
+        indexes = self.indexes[index*self.batch_size:(index+1)*self.batch_size]
+
+        # Find list of IDs
+        list_IDs_temp = [self.file_list[k] for k in indexes]
+
+        # Generate data
+        X, y = self.__data_generation(list_IDs_temp)
+
+        return X, y
+
+    def on_epoch_end(self):
+        self.indexes = np.arange(len(self.file_list))
+        if self.shuffle == True:
+            np.random.shuffle(self.indexes)
+
+    def __data_generation(self, list_IDs_temp):
+        'Generates data containing batch_size samples' # X : (n_samples, *dim, n_channels)
+        # Initialization
+        X = np.empty((self.batch_size, *self.dim, 1))
+        y = np.empty((self.batch_size, *self.dim, 1), dtype=int)
+
+        # Generate data
+        for i, ID in enumerate(list_IDs_temp):
+            npz = load_npz(os.path.join(self.image_path, f"{ID}"))
+            npz.shape += 1,
+            X[i,] = npz
+            
+            filename = ID.split('.')[0]
+            mask = load_mask(os.path.join(self.mask_path, f"{filename}.png"))
+            mask.shape += 1,
+            y[i] = mask
+
+        return X, y
+        
+        
 def testGenerator(test_path,num_image = 30,target_size = (256,256),flag_multi_class = False,as_gray = True):
     for i in range(num_image):
         img = io.imread(os.path.join(test_path,"%d.png"%i),as_gray = as_gray)
